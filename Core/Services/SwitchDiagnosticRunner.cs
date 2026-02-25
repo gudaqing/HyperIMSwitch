@@ -46,11 +46,7 @@ public sealed class SwitchDiagnosticRunner
             b.LangId == TsfConstants.LANGID_JAPANESE);
         var zh = bindings.FirstOrDefault(b =>
             b.ProfileType == TsfConstants.TF_PROFILETYPE_INPUTPROCESSOR &&
-            (b.DisplayName.Contains("微信", StringComparison.OrdinalIgnoreCase) ||
-             b.DisplayName.Contains("WeChat", StringComparison.OrdinalIgnoreCase)))
-            ?? bindings.FirstOrDefault(b =>
-                b.ProfileType == TsfConstants.TF_PROFILETYPE_INPUTPROCESSOR &&
-                b.LangId == TsfConstants.LANGID_CHINESE_SIMPLIFIED);
+            b.LangId == TsfConstants.LANGID_CHINESE_SIMPLIFIED);
 
         if (en == null || jp == null || zh == null)
         {

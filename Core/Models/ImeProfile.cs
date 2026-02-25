@@ -17,6 +17,4 @@ public sealed record ImeProfile(
     public bool IsInputProcessor  => ProfileType == TsfConstants.TF_PROFILETYPE_INPUTPROCESSOR;
     public bool IsEnglish   => LangId == TsfConstants.LANGID_ENGLISH_US && IsKeyboardLayout;
     public bool IsJapanese  => LangId == TsfConstants.LANGID_JAPANESE   && IsInputProcessor;
-    public bool IsWeChatIM  => Description.Contains("微信输入法", StringComparison.OrdinalIgnoreCase)
-                            || Description.Contains("WeChat Input", StringComparison.OrdinalIgnoreCase);
 }

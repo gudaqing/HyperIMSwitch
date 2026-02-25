@@ -12,11 +12,27 @@ public sealed partial class BindingRowViewModel : ObservableObject
     public IReadOnlyList<ProfileOption>        AvailableProfiles { get; }
     public IReadOnlyList<ConversionModeOption> AvailableModes    { get; }
 
-    [ObservableProperty]
     private ProfileOption? _selectedProfile;
+    public ProfileOption? SelectedProfile
+    {
+        get => _selectedProfile;
+        set
+        {
+            if (SetProperty(ref _selectedProfile, value))
+                OnSelectedProfileChanged(value);
+        }
+    }
 
-    [ObservableProperty]
     private ConversionModeOption? _selectedMode;
+    public ConversionModeOption? SelectedMode
+    {
+        get => _selectedMode;
+        set
+        {
+            if (SetProperty(ref _selectedMode, value))
+                OnSelectedModeChanged(value);
+        }
+    }
 
     private bool _showModeSelector;
     public bool ShowModeSelector
@@ -42,7 +58,7 @@ public sealed partial class BindingRowViewModel : ObservableObject
         RemoveCommand     = new RelayCommand(() => removeCallback(this));
     }
 
-    partial void OnSelectedProfileChanged(ProfileOption? value)
+    private void OnSelectedProfileChanged(ProfileOption? value)
     {
         bool isJapaneseIme = value?.Profile.LangId == TsfConstants.LANGID_JAPANESE
                           && value.Profile.IsInputProcessor;
@@ -70,7 +86,7 @@ public sealed partial class BindingRowViewModel : ObservableObject
         }
     }
 
-    partial void OnSelectedModeChanged(ConversionModeOption? value)
+    private void OnSelectedModeChanged(ConversionModeOption? value)
     {
         Binding.ConversionMode = value?.Mode;
     }

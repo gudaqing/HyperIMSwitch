@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -12,11 +13,19 @@ public sealed partial class SettingsViewModel : ObservableObject
 {
     public ObservableCollection<BindingRowViewModel> Rows { get; } = new();
 
-    [ObservableProperty]
     private bool _autoStart;
+    public bool AutoStart
+    {
+        get => _autoStart;
+        set => SetProperty(ref _autoStart, value);
+    }
 
-    [ObservableProperty]
     private string _statusMessage = string.Empty;
+    public string StatusMessage
+    {
+        get => _statusMessage;
+        set => SetProperty(ref _statusMessage, value);
+    }
 
     public IReadOnlyList<ProfileOption>        AvailableProfiles { get; private set; } = new List<ProfileOption>();
     public IReadOnlyList<ConversionModeOption> AvailableModes    { get; private set; } = BuildModes();
@@ -35,7 +44,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             InstalledProfiles.Clear();
             foreach (var p in enumerator.Profiles)
             {
-                string label = $"[{p.LangId:X4}] {p.Description}";
+                string label = BuildProfileLabel(p);
                 InstalledProfiles.Add(label);
                 profileOptions.Add(new ProfileOption(p, label));
             }
@@ -141,4 +150,23 @@ public sealed partial class SettingsViewModel : ObservableObject
             new(TsfConstants.CONVERSION_MODE_KATAKANA_HALF, "半角カタカナ / Half Katakana"),
             new(TsfConstants.CONVERSION_MODE_ALPHANUMERIC,  "英数字 / Alphanumeric"),
         };
+
+    private static string BuildProfileLabel(ImeProfile profile)
+    {
+        var langName = GetLanguageDisplayName(profile.LangId);
+        var desc = string.IsNullOrWhiteSpace(profile.Description) ? "(No Description)" : profile.Description;
+        return $"{langName} [{profile.LangId:X4}] - {desc}";
+    }
+
+    private static string GetLanguageDisplayName(ushort langId)
+    {
+        try
+        {
+            return CultureInfo.GetCultureInfo(langId).DisplayName;
+        }
+        catch (CultureNotFoundException)
+        {
+            return $"Language 0x{langId:X4}";
+        }
+    }
 }

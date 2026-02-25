@@ -11,6 +11,8 @@ namespace HyperIMSwitch.UI;
 
 public sealed partial class HotkeyEditorControl : UserControl
 {
+    public event System.EventHandler? HotkeyChanged;
+
     private bool           _recording;
     private HotkeyBinding? _binding;
 
@@ -61,6 +63,7 @@ public sealed partial class HotkeyEditorControl : UserControl
 
         _recording = false;
         UpdateDisplay();
+        HotkeyChanged?.Invoke(this, System.EventArgs.Empty);
         e.Handled = true;
     }
 
@@ -75,6 +78,7 @@ public sealed partial class HotkeyEditorControl : UserControl
             _binding.VirtualKey = 0;
         }
         UpdateDisplay();
+        HotkeyChanged?.Invoke(this, System.EventArgs.Empty);
     }
 
     private void UpdateDisplay()
