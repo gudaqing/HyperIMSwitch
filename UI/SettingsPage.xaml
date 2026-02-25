@@ -1,0 +1,109 @@
+<Page
+    x:Class="HyperIMSwitch.UI.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:HyperIMSwitch.UI"
+    xmlns:vm="using:HyperIMSwitch.UI.ViewModels"
+    Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+
+    <ScrollViewer Padding="24">
+        <StackPanel x:Name="RootPanel" Spacing="16">
+
+            <!-- Header row -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="HyperIMSwitch"
+                    Style="{ThemeResource TitleTextBlockStyle}"
+                    VerticalAlignment="Center"/>
+                <Button x:Name="AddRowButton"
+                    Grid.Column="1"
+                    Content="+ 添加绑定 / Add"
+                    Click="AddRowButton_Click"/>
+            </Grid>
+
+            <TextBlock Text="IME 热键切换工具 / IME Hotkey Switcher"
+                Style="{ThemeResource SubtitleTextBlockStyle}"
+                Opacity="0.6"/>
+
+            <!-- Dynamic binding rows -->
+            <ItemsControl x:Name="BindingRowsControl">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:BindingRowViewModel">
+                        <Border Background="{ThemeResource ControlFillColorDefaultBrush}"
+                                CornerRadius="8" Padding="12" Margin="0,0,0,8">
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- Profile selector -->
+                                <ComboBox Grid.Column="0" Grid.Row="0"
+                                    HorizontalAlignment="Stretch"
+                                    ItemsSource="{x:Bind AvailableProfiles}"
+                                    SelectedItem="{x:Bind SelectedProfile, Mode=TwoWay}"
+                                    DisplayMemberPath="DisplayName"
+                                    PlaceholderText="选择输入法 / Select IME"/>
+
+                                <!-- Hotkey editor -->
+                                <local:HotkeyEditorControl
+                                    Grid.Column="1" Grid.Row="0"
+                                    Binding="{x:Bind Binding}"/>
+
+                                <!-- Remove button -->
+                                <Button Grid.Column="2" Grid.Row="0"
+                                    Content="×"
+                                    Command="{x:Bind RemoveCommand}"
+                                    VerticalAlignment="Center"/>
+
+                                <!-- Conversion mode (only shown for Japanese IME) -->
+                                <ComboBox Grid.Column="0" Grid.Row="1"
+                                    Margin="0,6,0,0"
+                                    HorizontalAlignment="Stretch"
+                                    ItemsSource="{x:Bind AvailableModes}"
+                                    SelectedItem="{x:Bind SelectedMode, Mode=TwoWay}"
+                                    DisplayMemberPath="DisplayName"
+                                    PlaceholderText="输入模式 / Conversion Mode"
+                                    Visibility="{x:Bind ShowModeSelector, Mode=OneWay}"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- Auto-start -->
+            <Border Background="{ThemeResource ControlFillColorDefaultBrush}"
+                    CornerRadius="8" Padding="16">
+                <ToggleSwitch x:Name="AutoStartToggle"
+                    Header="开机自启 / Auto Start on Login"/>
+            </Border>
+
+            <!-- Save + status -->
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button x:Name="SaveButton"
+                    Content="保存 / Save"
+                    Style="{ThemeResource AccentButtonStyle}"
+                    Click="SaveButton_Click"/>
+                <TextBlock x:Name="StatusText"
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+            </StackPanel>
+
+            <!-- Detected IME list (expandable) -->
+            <Expander Header="已检测到的输入法 / Detected IMEs"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Stretch">
+                <ListView x:Name="ProfilesList" MaxHeight="200"/>
+            </Expander>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>
