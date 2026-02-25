@@ -155,7 +155,17 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         var langName = GetLanguageDisplayName(profile.LangId);
         var desc = string.IsNullOrWhiteSpace(profile.Description) ? "(No Description)" : profile.Description;
-        return $"{langName} [{profile.LangId:X4}] - {desc}";
+        if (profile.ProfileType == TsfConstants.TF_PROFILETYPE_KEYBOARDLAYOUT)
+        {
+            // For keyboard layouts, if description is just language text (eg: "日语"),
+            // avoid noisy duplicate label like "日语 - 日语".
+            if (string.Equals(desc, langName, System.StringComparison.CurrentCultureIgnoreCase))
+                return $"[键盘] {langName} [{profile.LangId:X4}]";
+
+            return $"[键盘] {langName} [{profile.LangId:X4}] - {desc}";
+        }
+
+        return $"[输入法] {langName} [{profile.LangId:X4}] - {desc}";
     }
 
     private static string GetLanguageDisplayName(ushort langId)

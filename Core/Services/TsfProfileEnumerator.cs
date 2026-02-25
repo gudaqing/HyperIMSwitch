@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 using HyperIMSwitch.Core.Models;
 using HyperIMSwitch.Interop;
+using Microsoft.Win32;
 
 namespace HyperIMSwitch.Core.Services;
 
@@ -20,6 +23,12 @@ public sealed class TsfProfileEnumerator
 
     [DllImport("user32.dll")]
     private static extern int GetKeyboardLayoutList(int nBuff, [Out] IntPtr[]? lpList);
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int SHLoadIndirectString(
+        string pszSource,
+        StringBuilder pszOutBuf,
+        int cchOutBuf,
+        IntPtr ppvReserved);
 
     public void Enumerate()
     {
@@ -167,7 +176,7 @@ public sealed class TsfProfileEnumerator
                 Guid.Empty,
                 Guid.Empty,
                 hkl,
-                $"KeyboardLayout-{langid:X4}"));
+                GetKeyboardLayoutDescription(langid, hkl)));
         }
     }
 
@@ -250,5 +259,78 @@ public sealed class TsfProfileEnumerator
         {
             try { Marshal.ReleaseComObject(rawEnum); } catch { /* ignore */ }
         }
+    }
+
+    private static string GetKeyboardLayoutDescription(ushort langid, IntPtr hkl)
+    {
+        var text = TryGetKeyboardLayoutDisplayText(hkl, langid);
+        if (!string.IsNullOrWhiteSpace(text))
+            return text!;
+
+        try
+        {
+            string langName = CultureInfo.GetCultureInfo(langid).DisplayName;
+            return $"{langName} Keyboard";
+        }
+        catch (CultureNotFoundException)
+        {
+            return $"KeyboardLayout-{langid:X4}";
+        }
+    }
+
+    private static string? TryGetKeyboardLayoutDisplayText(IntPtr hkl, ushort langid)
+    {
+        foreach (var klid in BuildKlidCandidates(hkl, langid))
+        {
+            string keyPath = $@"SYSTEM\CurrentControlSet\Control\Keyboard Layouts\{klid}";
+            using var key = Registry.LocalMachine.OpenSubKey(keyPath);
+            if (key == null) continue;
+
+            string? displayName = key.GetValue("Layout Display Name") as string;
+            string? layoutText = key.GetValue("Layout Text") as string;
+
+            if (!string.IsNullOrWhiteSpace(displayName))
+            {
+                string resolved = ResolveIndirectString(displayName!);
+                if (!string.IsNullOrWhiteSpace(resolved))
+                    return resolved;
+            }
+
+            if (!string.IsNullOrWhiteSpace(layoutText))
+                return layoutText;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> BuildKlidCandidates(IntPtr hkl, ushort langid)
+    {
+        uint hkl32 = unchecked((uint)hkl.ToInt64());
+        ushort high = (ushort)((hkl32 >> 16) & 0xFFFF);
+
+        var list = new List<string>
+        {
+            $"0000{langid:X4}",
+            $"0000{high:X4}",
+            $"{hkl32:X8}"
+        };
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in list)
+        {
+            if (seen.Add(item))
+                yield return item;
+        }
+    }
+
+    private static string ResolveIndirectString(string input)
+    {
+        // Format: "@%SystemRoot%\\system32\\input.dll,-5000"
+        if (!input.StartsWith("@", StringComparison.Ordinal))
+            return input;
+
+        var sb = new StringBuilder(260);
+        int hr = SHLoadIndirectString(input, sb, sb.Capacity, IntPtr.Zero);
+        return hr == 0 ? sb.ToString() : input;
     }
 }
