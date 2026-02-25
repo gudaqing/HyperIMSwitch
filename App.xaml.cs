@@ -18,6 +18,7 @@ public partial class App : Application
     private SettingsService?      _settingsService;
     private TsfProfileEnumerator? _enumerator;
     private ImeSwitchService?     _switcher;
+    private SwitchDiagnosticRunner? _diagnosticRunner;
     private HotkeyService?        _hotkeyService;
     private TrayIconManager?      _trayManager;
     private AutoStartService?     _autoStartService;
@@ -65,6 +66,8 @@ public partial class App : Application
 
             _settingsService = new SettingsService();
             _settingsService.Load();
+            EnableFullSwitchDiagnostics(_settingsService.Settings);
+            _settingsService.Save();
             // 修复旧格式 settings.json 中 SlotId=0 的情况
             FixSlotIds(_settingsService.Settings);
 
@@ -72,8 +75,9 @@ public partial class App : Application
             _enumerator.Enumerate();
             BackfillBindingRuntimeFields(_settingsService.Settings, _enumerator);
 
-            _switcher = new ImeSwitchService();
+            _switcher = new ImeSwitchService(_settingsService.Settings.SwitchDiagnostics);
             _switcher.UpdateBindings(_settingsService.Settings.Hotkeys);
+            _diagnosticRunner = new SwitchDiagnosticRunner(_switcher, _settingsService);
             _hotkeyService = new HotkeyService(_switcher, _settingsService, UIDispatcher);
             _hotkeyService.Start();
             _hotkeyService.ApplyBindings(_settingsService.Settings.Hotkeys);
@@ -100,6 +104,11 @@ public partial class App : Application
     public void ShowSettings()
     {
         _mainWindow?.ShowWindow();
+    }
+
+    public void RunAutoDiagnostics()
+    {
+        _diagnosticRunner?.RunAllScenariosAsync();
     }
 
     public void OnExit()
@@ -135,6 +144,20 @@ public partial class App : Application
                 break;
             }
         }
+    }
+
+    private static void EnableFullSwitchDiagnostics(Core.Models.AppSettings settings)
+    {
+        settings.SwitchDiagnostics ??= new Core.Models.SwitchDiagnosticsOptions();
+        var d = settings.SwitchDiagnostics;
+        d.EnableRetryChain = true;
+        d.RetryEnableProfile = true;
+        d.RetryChangeCurrentLanguage = true;
+        d.RetrySetDefaultProfile = true;
+        d.RetryForegroundLangRequest = true;
+        d.LogForegroundWindowContext = true;
+        d.LogCurrentLanguageState = true;
+        d.LogStepElapsedMs = true;
     }
 
     private static void ShowFatalError(Exception ex)

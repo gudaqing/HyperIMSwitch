@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using HyperIMSwitch.Core.Models;
@@ -8,20 +9,16 @@ using HyperIMSwitch.Interop;
 
 namespace HyperIMSwitch.Core.Services;
 
-/// <summary>
-/// Switches the active IME profile via TSF.
-/// All TSF COM calls are executed on a dedicated regular-STA thread to avoid
-/// WinUI 3 ASTA restrictions that block ITfInputProcessorProfileMgr::ActivateProfile.
-/// </summary>
 public sealed class ImeSwitchService
 {
     private Dictionary<int, HotkeyBinding> _bindingsById = new();
-
-    // Dedicated regular-STA worker thread — avoids ASTA COM restrictions
     private readonly BlockingCollection<Action> _queue = new();
+    private readonly SwitchDiagnosticsOptions _diag;
+    private static long _switchSequence;
 
-    public ImeSwitchService()
+    public ImeSwitchService(SwitchDiagnosticsOptions? diagnostics = null)
     {
+        _diag = diagnostics ?? new SwitchDiagnosticsOptions();
         var t = new Thread(StaWorker)
         {
             IsBackground = true,
@@ -54,12 +51,58 @@ public sealed class ImeSwitchService
     public void SwitchById(int slotId)
     {
         if (_bindingsById.TryGetValue(slotId, out var b))
-            _queue.Add(() => ActivateProfileOnSta(b));
+        {
+            long switchId = Interlocked.Increment(ref _switchSequence);
+            _queue.Add(() => ActivateProfileOnSta(b, switchId, _diag));
+        }
         else
-            Console.WriteLine($"[Switch] SwitchById  slotId={slotId}  NOT FOUND");
+        {
+            Console.WriteLine($"[Switch] SwitchById slotId={slotId} NOT FOUND");
+        }
     }
 
-    // ---- Win32 ----
+    public bool SwitchByIdSync(int slotId, int timeoutMs = 1500)
+    {
+        if (!_bindingsById.TryGetValue(slotId, out var b))
+            return false;
+
+        long switchId = Interlocked.Increment(ref _switchSequence);
+        using var done = new ManualResetEventSlim(false);
+        _queue.Add(() =>
+        {
+            try { ActivateProfileOnSta(b, switchId, _diag); }
+            finally { done.Set(); }
+        });
+        return done.Wait(timeoutMs);
+    }
+
+    public ushort? GetCurrentLanguageSync(int timeoutMs = 1000)
+    {
+        ushort? result = null;
+        using var done = new ManualResetEventSlim(false);
+        _queue.Add(() =>
+        {
+            object? raw = null;
+            try
+            {
+                raw = Activator.CreateInstance(
+                    Type.GetTypeFromCLSID(TsfConstants.CLSID_TF_InputProcessorProfiles)!)!;
+                var profiles = (ITfInputProcessorProfiles)raw;
+                int hr = profiles.GetCurrentLanguage(out ushort langId);
+                if (hr == 0) result = langId;
+            }
+            catch
+            {
+                result = null;
+            }
+            finally
+            {
+                if (raw != null) Marshal.ReleaseComObject(raw);
+                done.Set();
+            }
+        });
+        return done.Wait(timeoutMs) ? result : null;
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr ActivateKeyboardLayout(IntPtr hkl, uint Flags);
@@ -72,76 +115,138 @@ public sealed class ImeSwitchService
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
-    // ---- TSF activation (runs on STA thread) ----
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
-    private static void ActivateProfileOnSta(HotkeyBinding b)
+    private static void ActivateProfileOnSta(HotkeyBinding b, long switchId, SwitchDiagnosticsOptions diag)
     {
-        Console.WriteLine($"[Switch] ActivateProfile  slot={b.SlotId}  name=\"{b.DisplayName}\"" +
-                          $"  lang=0x{b.LangId:X4}  type={b.ProfileType}");
+        var totalSw = Stopwatch.StartNew();
+        string tag = $"[Switch#{switchId}]";
+        void Log(string msg) => Console.WriteLine($"{tag} {msg}");
 
-        Console.WriteLine($"[Switch]   clsid={b.Clsid}  guidProfile={b.GuidProfile}");
+        Log($"ActivateProfile slot={b.SlotId} name=\"{b.DisplayName}\" lang=0x{b.LangId:X4} type={b.ProfileType}");
+        Log($"Profile clsid={b.Clsid} guidProfile={b.GuidProfile}");
 
         object? raw = null;
         try
         {
             raw = Activator.CreateInstance(
                 Type.GetTypeFromCLSID(TsfConstants.CLSID_TF_InputProcessorProfiles)!)!;
-
             var profiles = (ITfInputProcessorProfiles)raw;
+
+            if (diag.LogCurrentLanguageState)
+                LogCurrentLanguage(profiles, Log, "Before", diag.LogStepElapsedMs);
+
             if (b.ProfileType == TsfConstants.TF_PROFILETYPE_INPUTPROCESSOR)
             {
-                Guid clsid = b.Clsid;
-                Guid guid  = b.GuidProfile;
-                int hr = profiles.ActivateLanguageProfile(ref clsid, b.LangId, ref guid);
-                Console.WriteLine($"[Switch] ActivateLanguageProfile  hr=0x{(uint)hr:X8}");
-
-                if (hr != 0)
-                {
-                    int hrEnabled = profiles.IsEnabledLanguageProfile(ref clsid, b.LangId, ref guid, out bool enabled);
-                    Console.WriteLine($"[Switch] IsEnabledLanguageProfile  hr=0x{(uint)hrEnabled:X8}  enabled={enabled}");
-
-                    if (hrEnabled == 0 && !enabled)
-                    {
-                        int hrEnable = profiles.EnableLanguageProfile(ref clsid, b.LangId, ref guid, true);
-                        Console.WriteLine($"[Switch] EnableLanguageProfile(true)  hr=0x{(uint)hrEnable:X8}");
-                    }
-
-                    int hrChangeLang = profiles.ChangeCurrentLanguage(b.LangId);
-                    Console.WriteLine($"[Switch] ChangeCurrentLanguage  hr=0x{(uint)hrChangeLang:X8}");
-
-                    int hrSetDefault = profiles.SetDefaultLanguageProfile(b.LangId, ref clsid, ref guid);
-                    Console.WriteLine($"[Switch] SetDefaultLanguageProfile  hr=0x{(uint)hrSetDefault:X8}");
-
-                    // Push language switch to the foreground window thread;
-                    // this is required when current foreground app is already in 0409 layout.
-                    RequestForegroundLanguageSwitch(new IntPtr(((long)b.LangId << 16) | b.LangId));
-
-                    hr = profiles.ActivateLanguageProfile(ref clsid, b.LangId, ref guid);
-                    Console.WriteLine($"[Switch] ActivateLanguageProfile(Retry)  hr=0x{(uint)hr:X8}");
-                }
+                ActivateInputProcessor(b, profiles, diag, Log);
             }
             else
             {
-                long hklValue = b.Hkl != 0 ? b.Hkl : ((long)b.LangId << 16) | b.LangId;
-                IntPtr hkl = new(hklValue);
-
-                RequestForegroundLanguageSwitch(hkl);
-
-                // Fallback for windows that ignore WM_INPUTLANGCHANGEREQUEST.
-                var result = ActivateKeyboardLayout(hkl, KLF_SETFORPROCESS);
-                Console.WriteLine($"[Switch] ActivateKeyboardLayout(Fallback)  hkl=0x{hkl:X}  result=0x{result:X}  err={Marshal.GetLastWin32Error()}");
+                ActivateKeyboardLayoutProfile(b, diag, Log);
             }
+
+            if (diag.LogCurrentLanguageState)
+                LogCurrentLanguage(profiles, Log, "After", diag.LogStepElapsedMs);
         }
         finally
         {
             if (raw != null) Marshal.ReleaseComObject(raw);
+            Log($"Done elapsed={totalSw.ElapsedMilliseconds}ms");
         }
 
         if (b.ConversionMode.HasValue)
-            SetJapaneseConversionMode(b.ConversionMode.Value);
+            SetJapaneseConversionMode(b.ConversionMode.Value, Log);
     }
 
-    private static void SetJapaneseConversionMode(int mode)
+    private static void ActivateInputProcessor(
+        HotkeyBinding b,
+        ITfInputProcessorProfiles profiles,
+        SwitchDiagnosticsOptions diag,
+        Action<string> log)
+    {
+        Guid clsid = b.Clsid;
+        Guid guid = b.GuidProfile;
+
+        int hr = CallHr(() => profiles.ActivateLanguageProfile(ref clsid, b.LangId, ref guid),
+            "ActivateLanguageProfile", diag.LogStepElapsedMs, log);
+        if (hr == 0 || !diag.EnableRetryChain) return;
+
+        int hrEnabled = profiles.IsEnabledLanguageProfile(ref clsid, b.LangId, ref guid, out bool enabled);
+        log($"IsEnabledLanguageProfile hr=0x{(uint)hrEnabled:X8} enabled={enabled}");
+
+        if (diag.RetryEnableProfile && hrEnabled == 0 && !enabled)
+        {
+            CallHr(() => profiles.EnableLanguageProfile(ref clsid, b.LangId, ref guid, true),
+                "EnableLanguageProfile(true)", diag.LogStepElapsedMs, log);
+        }
+
+        if (diag.RetryChangeCurrentLanguage)
+        {
+            CallHr(() => profiles.ChangeCurrentLanguage(b.LangId),
+                "ChangeCurrentLanguage", diag.LogStepElapsedMs, log);
+        }
+
+        if (diag.RetrySetDefaultProfile)
+        {
+            CallHr(() => profiles.SetDefaultLanguageProfile(b.LangId, ref clsid, ref guid),
+                "SetDefaultLanguageProfile", diag.LogStepElapsedMs, log);
+        }
+
+        if (diag.RetryForegroundLangRequest)
+        {
+            IntPtr langHkl = new(((long)b.LangId << 16) | b.LangId);
+            RequestForegroundLanguageSwitch(langHkl, log, diag);
+        }
+
+        CallHr(() => profiles.ActivateLanguageProfile(ref clsid, b.LangId, ref guid),
+            "ActivateLanguageProfile(Retry)", diag.LogStepElapsedMs, log);
+    }
+
+    private static void ActivateKeyboardLayoutProfile(
+        HotkeyBinding b,
+        SwitchDiagnosticsOptions diag,
+        Action<string> log)
+    {
+        long hklValue = b.Hkl != 0 ? b.Hkl : ((long)b.LangId << 16) | b.LangId;
+        IntPtr hkl = new(hklValue);
+
+        RequestForegroundLanguageSwitch(hkl, log, diag);
+
+        var sw = Stopwatch.StartNew();
+        var result = ActivateKeyboardLayout(hkl, KLF_SETFORPROCESS);
+        if (diag.LogStepElapsedMs)
+            log($"ActivateKeyboardLayout(Fallback) hkl=0x{hkl:X} result=0x{result:X} err={Marshal.GetLastWin32Error()} elapsed={sw.ElapsedMilliseconds}ms");
+        else
+            log($"ActivateKeyboardLayout(Fallback) hkl=0x{hkl:X} result=0x{result:X} err={Marshal.GetLastWin32Error()}");
+    }
+
+    private static int CallHr(Func<int> call, string name, bool logElapsed, Action<string> log)
+    {
+        var sw = Stopwatch.StartNew();
+        int hr = call();
+        if (logElapsed)
+            log($"{name} hr=0x{(uint)hr:X8} elapsed={sw.ElapsedMilliseconds}ms");
+        else
+            log($"{name} hr=0x{(uint)hr:X8}");
+        return hr;
+    }
+
+    private static void LogCurrentLanguage(
+        ITfInputProcessorProfiles profiles,
+        Action<string> log,
+        string phase,
+        bool logElapsed)
+    {
+        var sw = Stopwatch.StartNew();
+        int hr = profiles.GetCurrentLanguage(out ushort langId);
+        if (logElapsed)
+            log($"{phase} GetCurrentLanguage hr=0x{(uint)hr:X8} lang=0x{langId:X4} elapsed={sw.ElapsedMilliseconds}ms");
+        else
+            log($"{phase} GetCurrentLanguage hr=0x{(uint)hr:X8} lang=0x{langId:X4}");
+    }
+
+    private static void SetJapaneseConversionMode(int mode, Action<string> log)
     {
         object? threadMgrRaw = null;
         try
@@ -151,7 +256,6 @@ public sealed class ImeSwitchService
 
             var threadMgr = (ITfThreadMgr)threadMgrRaw;
             if (threadMgr.Activate(out uint clientId) != 0) return;
-
             if (threadMgr.GetGlobalCompartment(out var compMgr) != 0 || compMgr == null) return;
 
             var convGuid = TsfConstants.GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION;
@@ -159,7 +263,7 @@ public sealed class ImeSwitchService
 
             object value = mode;
             compartment.SetValue(clientId, ref value);
-            Console.WriteLine($"[Switch] SetConversionMode  mode=0x{mode:X2}");
+            log($"SetConversionMode mode=0x{mode:X2}");
 
             threadMgr.Deactivate();
             Marshal.ReleaseComObject(compartment);
@@ -167,7 +271,7 @@ public sealed class ImeSwitchService
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Switch] SetJapaneseConversionMode  ex={ex.Message}");
+            log($"SetJapaneseConversionMode ex={ex.Message}");
         }
         finally
         {
@@ -175,11 +279,41 @@ public sealed class ImeSwitchService
         }
     }
 
-    private static void RequestForegroundLanguageSwitch(IntPtr hkl)
+    private static void RequestForegroundLanguageSwitch(
+        IntPtr hkl,
+        Action<string> log,
+        SwitchDiagnosticsOptions diag)
     {
         IntPtr hwnd = GetForegroundWindow();
+        uint threadId = 0;
+        uint processId = 0;
+        string processName = "unknown";
+        if (hwnd != IntPtr.Zero)
+        {
+            threadId = GetWindowThreadProcessId(hwnd, out processId);
+            if (diag.LogForegroundWindowContext && processId != 0)
+            {
+                try { processName = Process.GetProcessById((int)processId).ProcessName; }
+                catch { processName = "unavailable"; }
+            }
+        }
+
+        var sw = Stopwatch.StartNew();
         bool posted = hwnd != IntPtr.Zero &&
                       PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, hkl);
-        Console.WriteLine($"[Switch] WM_INPUTLANGCHANGEREQUEST  hwnd=0x{hwnd:X}  hkl=0x{hkl:X}  ok={posted}  err={Marshal.GetLastWin32Error()}");
+        if (diag.LogForegroundWindowContext)
+        {
+            if (diag.LogStepElapsedMs)
+                log($"WM_INPUTLANGCHANGEREQUEST hwnd=0x{hwnd:X} tid={threadId} pid={processId} proc={processName} hkl=0x{hkl:X} ok={posted} err={Marshal.GetLastWin32Error()} elapsed={sw.ElapsedMilliseconds}ms");
+            else
+                log($"WM_INPUTLANGCHANGEREQUEST hwnd=0x{hwnd:X} tid={threadId} pid={processId} proc={processName} hkl=0x{hkl:X} ok={posted} err={Marshal.GetLastWin32Error()}");
+        }
+        else
+        {
+            if (diag.LogStepElapsedMs)
+                log($"WM_INPUTLANGCHANGEREQUEST hwnd=0x{hwnd:X} hkl=0x{hkl:X} ok={posted} err={Marshal.GetLastWin32Error()} elapsed={sw.ElapsedMilliseconds}ms");
+            else
+                log($"WM_INPUTLANGCHANGEREQUEST hwnd=0x{hwnd:X} hkl=0x{hkl:X} ok={posted} err={Marshal.GetLastWin32Error()}");
+        }
     }
 }

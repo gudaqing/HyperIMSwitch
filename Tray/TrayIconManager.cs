@@ -195,6 +195,11 @@ public sealed class TrayIconManager : IDisposable
         TrayIconNative.AppendMenuW(hMenu, TrayIconNative.MF_SEPARATOR,
             IntPtr.Zero, string.Empty);
         TrayIconNative.AppendMenuW(hMenu, TrayIconNative.MF_STRING,
+            new IntPtr(1004), "自动诊断 / Run Diagnostics");
+
+        TrayIconNative.AppendMenuW(hMenu, TrayIconNative.MF_SEPARATOR,
+            IntPtr.Zero, string.Empty);
+        TrayIconNative.AppendMenuW(hMenu, TrayIconNative.MF_STRING,
             new IntPtr(1003), "退出 / Exit");
 
         TrayIconNative.SetForegroundWindow(hWnd);
@@ -221,6 +226,9 @@ public sealed class TrayIconManager : IDisposable
                 break;
             case 1003:
                 _uiDispatcher.TryEnqueue(() => App.Current.OnExit());
+                break;
+            case 1004:
+                _uiDispatcher.TryEnqueue(() => App.Current.RunAutoDiagnostics());
                 break;
         }
     }
