@@ -118,6 +118,19 @@ public sealed class ImeSwitchService
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    [DllImport("imm32.dll")]
+    private static extern IntPtr ImmGetDefaultIMEWnd(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    private const uint WM_IME_CONTROL = 0x0283;
+    private const int IMC_GETCONVERSIONMODE = 0x0001;
+    private const int IMC_SETCONVERSIONMODE = 0x0002;
+    private const int IMC_SETSENTENCEMODE = 0x0004;
+    private const int IMC_GETOPENSTATUS = 0x0005;
+    private const int IMC_SETOPENSTATUS = 0x0006;
+
     private static void ActivateProfileOnSta(HotkeyBinding b, long switchId, SwitchDiagnosticsOptions diag)
     {
         var totalSw = Stopwatch.StartNew();
@@ -156,7 +169,12 @@ public sealed class ImeSwitchService
         }
 
         if (b.ConversionMode.HasValue)
-            SetJapaneseConversionMode(b.ConversionMode.Value, Log);
+        {
+            if (WaitForCurrentLanguage(TsfConstants.LANGID_JAPANESE, 300, Log))
+                SetJapaneseConversionMode(b.ConversionMode.Value, Log);
+            else
+                Log("Skip SetConversionMode: current language is not 0x0411 after timeout");
+        }
     }
 
     private static void ActivateInputProcessor(
@@ -276,6 +294,89 @@ public sealed class ImeSwitchService
         finally
         {
             if (threadMgrRaw != null) Marshal.ReleaseComObject(threadMgrRaw);
+        }
+
+        // Also force mode on the foreground window's IME context.
+        // TSF global compartment alone is not always enough for some apps.
+        try
+        {
+            IntPtr hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return;
+
+            IntPtr imeWnd = ImmGetDefaultIMEWnd(hwnd);
+            if (imeWnd == IntPtr.Zero) return;
+
+            var openRet = SendMessageW(imeWnd, WM_IME_CONTROL,
+                new IntPtr(IMC_SETOPENSTATUS), new IntPtr(1));
+            var convRet = SendMessageW(imeWnd, WM_IME_CONTROL,
+                new IntPtr(IMC_SETCONVERSIONMODE), new IntPtr(mode));
+            // 0 means no special sentence mode preference.
+            var sentRet = SendMessageW(imeWnd, WM_IME_CONTROL,
+                new IntPtr(IMC_SETSENTENCEMODE), IntPtr.Zero);
+
+            log($"IME_CONTROL open={openRet} conv={convRet} sent={sentRet} mode=0x{mode:X2}");
+
+            // Some apps/controls overwrite IME state shortly after focus/language switch.
+            // Re-check with staged delays and reapply when needed.
+            int[] checkDelaysMs = { 80, 200 };
+            for (int i = 0; i < checkDelaysMs.Length; i++)
+            {
+                Thread.Sleep(checkDelaysMs[i]);
+                long openNow = SendMessageW(imeWnd, WM_IME_CONTROL,
+                    new IntPtr(IMC_GETOPENSTATUS), IntPtr.Zero).ToInt64();
+                long convNow = SendMessageW(imeWnd, WM_IME_CONTROL,
+                    new IntPtr(IMC_GETCONVERSIONMODE), IntPtr.Zero).ToInt64();
+                bool needRetry = openNow == 0 || (convNow & mode) != mode;
+                log($"IME_CONTROL_CHECK[{i}] delay={checkDelaysMs[i]} open={openNow} conv=0x{convNow:X} needRetry={needRetry}");
+
+                if (!needRetry) break;
+
+                SendMessageW(imeWnd, WM_IME_CONTROL,
+                    new IntPtr(IMC_SETOPENSTATUS), new IntPtr(1));
+                SendMessageW(imeWnd, WM_IME_CONTROL,
+                    new IntPtr(IMC_SETCONVERSIONMODE), new IntPtr(mode));
+                log($"IME_CONTROL_REAPPLY[{i}] mode=0x{mode:X2}");
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"IME_CONTROL ex={ex.Message}");
+        }
+    }
+
+    private static bool WaitForCurrentLanguage(ushort targetLang, int timeoutMs, Action<string> log)
+    {
+        var sw = Stopwatch.StartNew();
+        object? raw = null;
+        try
+        {
+            raw = Activator.CreateInstance(
+                Type.GetTypeFromCLSID(TsfConstants.CLSID_TF_InputProcessorProfiles)!)!;
+            var profiles = (ITfInputProcessorProfiles)raw;
+
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                int hr = profiles.GetCurrentLanguage(out ushort langId);
+                if (hr == 0 && langId == targetLang)
+                {
+                    log($"WaitForLang success target=0x{targetLang:X4} elapsed={sw.ElapsedMilliseconds}ms");
+                    return true;
+                }
+                Thread.Sleep(20);
+            }
+
+            int lastHr = profiles.GetCurrentLanguage(out ushort lastLang);
+            log($"WaitForLang timeout target=0x{targetLang:X4} lastHr=0x{(uint)lastHr:X8} lastLang=0x{lastLang:X4} elapsed={sw.ElapsedMilliseconds}ms");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            log($"WaitForLang ex={ex.Message}");
+            return false;
+        }
+        finally
+        {
+            if (raw != null) Marshal.ReleaseComObject(raw);
         }
     }
 
